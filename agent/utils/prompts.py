@@ -61,5 +61,6 @@ Here is the extracted information:
 {report}
 </report>
 
+Analyze if all required queries have been answers sufficiently or there is a need do gather more data.
 """
 

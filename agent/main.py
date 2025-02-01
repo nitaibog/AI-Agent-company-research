@@ -82,8 +82,9 @@ class EnrichmentReport(BaseModel):
         description="true if the report is satisfactory"
     )
     search_queries : list[str] = Field(
-        description="List of search queries to enrich the final report or adding missing data"
+        description="If is_satisfied is False, provide 1-3 targeted search queries to find the missing information and to enreach the data"
     )
+    reasoning: str = Field(description="Brief explanation of the assessment")
 
 def get_user_input(state: AgentState):
     # user_text = input("Enter company name and focus topics: ")
@@ -120,6 +121,7 @@ async def search_web(state: AgentState):
         tavily_search = AsyncTavilyClient()
         search_tasks = []
         for query in state.search_queries:
+             print(f"online search query: {query}")
              search_tasks.append(tavily_search.search(query,max_results=3))
         search_results = await asyncio.gather(*search_tasks) #list[dict]
         return{"search_results" : search_results}
@@ -149,7 +151,6 @@ def write_report(state: AgentState):
         content=search_results_str
     )
     report = llm.invoke([SystemMessage(content=answer_prompt)]) 
-    print(report.content)
     return{"report" : [report.content]}
 
 def Enrichment(state: AgentState):
@@ -162,9 +163,11 @@ def Enrichment(state: AgentState):
     if result.is_satisfied:
         return {"is_satisfied" : result.is_satisfied}
     else:
+        print(f"reasoning for enrichment step : {result.reasoning} /n/n")
+        print(f"new queries {result.search_queries} /n/n")
         return {"is_satisfied" : result.is_satisfied,
                 "enrichment_steps_taken" : state.enrichment_steps_taken + 1 ,
-                "queries": result.queries}
+                "search_queries": result.search_queries}
 
 def router(state: AgentState):
     max_enrichment_steps = 3
@@ -210,12 +213,15 @@ async def main():
         stream_mode="values"
     ):
         # Review search queries
-        search_queries = event.get("search_queries", "")
-        if search_queries:
-            for query in search_queries:
-                print(f"search_queries: {query}")
-                print("-" * 50)
-
+        # search_queries = event.get("search_queries", "")
+        # if search_queries:
+        #     for query in search_queries:
+        #         print(f"search_queries: {query}")
+        #         print("-" * 50)
+        report = event.get("report" , "")
+        # if event.get("report" , ""):
+        #     print(f"final report : {report}")
+        print(f"num of enrichment steps : {event.get("enrichment_steps_taken")}")
         # # Review search results
         # search_results = event.get("search_results", "")
         # if search_results:
