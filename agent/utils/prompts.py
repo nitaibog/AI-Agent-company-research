@@ -48,3 +48,18 @@ Please provide detailed research notes that:
 
 Remember: Don't try to format the output to match the schema - just take clear notes that capture all relevant information."""
 
+ENRICHMENT_PROMPT = """You are a research analyst tasked with reviewing the quality and completeness of extracted company information.
+
+Compare the extracted information with the reasearch queries:
+
+<Queries>
+{queries}
+</Queries>
+
+Here is the extracted information:
+<report>
+{report}
+</report>
+
+"""
+
