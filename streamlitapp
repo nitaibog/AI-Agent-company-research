@@ -1,0 +1,26 @@
+import streamlit as st
+
+# Streamlit UI setup
+st.set_page_config(page_title="Company Research Agent", page_icon="📊", layout="centered")
+
+st.markdown("""
+    <h1 style='text-align: center;'>📊 Company Research Agent</h1>
+    <p style='text-align: center; color: gray;'>Enter a query to get insights on a company.</p>
+    """, unsafe_allow_html=True)
+
+# Chat-style input
+user_input = st.text_area("Your Query", placeholder="E.g., 'Tell me about Tesla's financial health'")
+
+if st.button("🔍 Get Company Insights"):
+    if user_input.strip():
+        with st.spinner("Searching..."):
+            try:
+                # Send query to FastAPI backend
+                response = requests.post("http://localhost:8000/query", json={"query": user_input})
+                result = response.json().get("response", "No response received.")
+                st.success("✅ Research Completed")
+                st.markdown(f"**Result:** {result}")
+            except Exception as e:
+                st.error(f"Error: {e}")
+    else:
+        st.warning("⚠️ Please enter a query before submitting.")

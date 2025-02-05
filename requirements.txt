@@ -5,5 +5,7 @@ langsmith
 langchain-community
 langchain-core
 langchain-openai
+langgraph-checkpoint-mongodb
+pymongo
+streamlit
 tavily-python
-wikipedia

@@ -3,7 +3,7 @@ import operator
 from langchain_openai import ChatOpenAI
 from langchain_core.messages import HumanMessage, SystemMessage
 from langgraph.graph.message import AnyMessage, add_messages
-from typing import Any, List, Optional
+from typing import Any, Awaitable, List, Optional
 from typing_extensions import TypedDict
 from pydantic import BaseModel, Field
 from IPython.display import Image, display
@@ -18,8 +18,12 @@ from langchain_core.messages import AnyMessage
 from langchain_core.runnables import RunnableConfig
 from langgraph.graph import MessagesState
 from typing import Annotated, List
-from utils.prompts import QUERY_WRITER_PROMPT, INFO_PROMPT, ENRICHMENT_PROMPT
+from .utils.prompts import QUERY_WRITER_PROMPT, INFO_PROMPT, ENRICHMENT_PROMPT
 from tavily import AsyncTavilyClient
+from langgraph.checkpoint.mongodb.aio import AsyncMongoDBSaver
+from langgraph.checkpoint.mongodb import MongoDBSaver
+from pymongo import MongoClient,AsyncMongoClient
+
 import os, getpass
 
 
@@ -30,7 +34,7 @@ def _set_env(var: str):
 _set_env("OPENAI_API_KEY")
 _set_env("LANGCHAIN_API_KEY")
 _set_env("TAVILY_API_KEY")
-
+_set_env("MONGODB_STRING")
 
 llm = ChatOpenAI(model="gpt-4o", temperature=0) 
 # tools = [search_web]
@@ -46,7 +50,7 @@ class AgentState(BaseModel):
         description="The name of the company"
     )
     user_focus_topics : list[str] = Field(default=None,
-        description="List of the focus topics for research on the company from the user's input"
+        description="A list of topics to focus on if the user has specified such"
     )
     search_queries: list[str] = Field(default=None,
         description="List of search queries.",
@@ -54,7 +58,7 @@ class AgentState(BaseModel):
     search_results:  list[dict] = Field(default=None,
         description="Results of the online search"
     ) #Annotated[list, operator.add] # Source docs
-    report: Annotated[list, operator.add] = Field(default=None,
+    final_report: Annotated[list, operator.add] = Field(default=None,
         description="The final report"
     )
     is_satisfied : bool = Field(default=None,
@@ -121,7 +125,6 @@ async def search_web(state: AgentState):
         tavily_search = AsyncTavilyClient()
         search_tasks = []
         for query in state.search_queries:
-             print(f"online search query: {query}")
              search_tasks.append(tavily_search.search(query,max_results=3))
         search_results = await asyncio.gather(*search_tasks) #list[dict]
         return{"search_results" : search_results}
@@ -151,13 +154,13 @@ def write_report(state: AgentState):
         content=search_results_str
     )
     report = llm.invoke([SystemMessage(content=answer_prompt)]) 
-    return{"report" : [report.content]}
+    return{"final_report" : [report.content]}
 
 def Enrichment(state: AgentState):
     structured_llm = llm.with_structured_output(EnrichmentReport)
     enrichment_prompt = ENRICHMENT_PROMPT.format(
         queries=state.search_queries,
-        report=state.report
+        report=state.final_report
     )
     result = structured_llm.invoke([SystemMessage(content=enrichment_prompt)] + [HumanMessage(content="Produce a structured Enrichment report.")])
     if result.is_satisfied:
@@ -178,50 +181,81 @@ def router(state: AgentState):
         return END
     return "search_web"
 
-builder = StateGraph(AgentState)
 
-builder.add_node("get_user_input",get_user_input)
-builder.add_node("generate_queries" , generate_queries)
-builder.add_node("search_web", search_web)
-builder.add_node("write_report", write_report)
-builder.add_node("Enrichment", Enrichment)
+def build_agent():
+    builder = StateGraph(AgentState)
 
-builder.add_edge(START, "get_user_input")
-builder.add_edge("get_user_input","generate_queries")
-builder.add_edge("generate_queries", "search_web")
-builder.add_edge("search_web", "write_report")
-builder.add_edge("write_report" , "Enrichment")
-builder.add_conditional_edges("Enrichment",router)
+    builder.add_node("get_user_input",get_user_input)
+    builder.add_node("generate_queries" , generate_queries)
+    builder.add_node("search_web", search_web)
+    builder.add_node("write_report", write_report)
+    builder.add_node("Enrichment", Enrichment)
 
-memory = MemorySaver()
+    builder.add_edge(START, "get_user_input")
+    builder.add_edge("get_user_input","generate_queries")
+    builder.add_edge("generate_queries", "search_web")
+    builder.add_edge("search_web", "write_report")
+    builder.add_edge("write_report" , "Enrichment")
+    builder.add_conditional_edges("Enrichment",router)
 
-graph = builder.compile(checkpointer=memory)
+    MONGODB_URI = os.environ.get('MONGODB_STRING')
+    mongodb_client = AsyncMongoClient(MONGODB_URI)
+    checkpointer = AsyncMongoDBSaver(mongodb_client)
+    graph = builder.compile(checkpointer=checkpointer)
+    # async with AsyncMongoDBSaver.from_conn_string(
+    #     MONGODB_URI,db_name='tavilyproject',checkpoint_collection_name='chat_memory') as checkpointer :
+    #     graph = builder.compile(checkpointer=checkpointer)
+    
+    # await graph.ainvoke({"raw_user_input" : user_input},
+    #                         thread, 
+    #                         stream_mode="values"
+    #                         )
+    return graph
 
-# display(Image(graph.get_graph(xray=1).draw_mermaid_png()))
 
 
-# company = "Tesla"
-# thread = {"configurable": {"thread_id": "3"}}
-async def main():
-    company = "Tesla"
-    thread = {"configurable": {"thread_id": "1"}}
-    user_input = input("Enter company name and focus topics: ")
-    async for event in graph.astream(
-        # {"company": company, "user_notes": "please provide data about the company's stock and growth potential"}, 
-        {"raw_user_input" : user_input},
-        thread, 
-        stream_mode="values"
-    ):
+
+
+
+# async def main():
+#     thread = {"configurable": {"thread_id": "1"}}
+#     user_input = input("Enter company name and focus topics: ")
+#     graph = build_agent()
+#     result = await graph.ainvoke({"raw_user_input" : user_input},thread,stream_mode='values')
+#     print(type(result))
+#     print(result["final_report"])
+
+
+
+# if __name__ == "__main__":
+#     asyncio.run(main())
+
+
+    # async with AsyncMongoDBSaver.from_conn_string(
+    #     os.environ.get('MONGODB_STRING'),db_name='tavilyproject',checkpoint_collection_name='chat_memory'
+    #     ) as checkpointer :
+    #     graph = builder.compile(checkpointer=checkpointer)
+    #     await graph.ainvoke({"raw_user_input" : user_input},
+    #                         thread, 
+    #                         stream_mode="values"
+    #                         )
+        
+    # async for event in graph.astream(
+    #     # {"company": company, "user_notes": "please provide data about the company's stock and growth potential"}, 
+    #     {"raw_user_input" : user_input},
+    #     thread, 
+    #     stream_mode="values"
+    # ):
         # Review search queries
         # search_queries = event.get("search_queries", "")
         # if search_queries:
         #     for query in search_queries:
         #         print(f"search_queries: {query}")
         #         print("-" * 50)
-        report = event.get("report" , "")
+        # report = event.get("report" , "")
         # if event.get("report" , ""):
-        #     print(f"final report : {report}")
-        print(f"num of enrichment steps : {event.get("enrichment_steps_taken")}")
+        #     print(f"final report : {report[0]}")
+        # print(f"num of enrichment steps : {event.get("enrichment_steps_taken")}")
         # # Review search results
         # search_results = event.get("search_results", "")
         # if search_results:
@@ -230,8 +264,6 @@ async def main():
         #         print("-" * 50)
 
 # Run the async function
-if __name__ == "__main__":
-    asyncio.run(main())
 
 # def search_web(state: AgentState):
     
