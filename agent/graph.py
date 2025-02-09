@@ -11,7 +11,6 @@ from pymongo import MongoClient,AsyncMongoClient
 from .state import AgentState,UserInput,Queries,EnrichmentReport,WebSearchRouter
 from .utils import format_search_results
 import os, getpass
-import graphviz
 
 
 def _set_env(var: str):
