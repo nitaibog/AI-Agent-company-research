@@ -18,7 +18,7 @@ from langchain_core.messages import AnyMessage
 from langchain_core.runnables import RunnableConfig
 from langgraph.graph import MessagesState
 from typing import Annotated, List
-from .utils.prompts import QUERY_WRITER_PROMPT, INFO_PROMPT, ENRICHMENT_PROMPT
+from .utils.prompts import QUERY_WRITER_PROMPT, INFO_PROMPT, ENRICHMENT_PROMPT ,WEB_SEARCH_ROUTER_PROMPT, GET_USER_INPUT
 from tavily import AsyncTavilyClient
 from langgraph.checkpoint.mongodb.aio import AsyncMongoDBSaver
 from langgraph.checkpoint.mongodb import MongoDBSaver
@@ -37,14 +37,11 @@ _set_env("TAVILY_API_KEY")
 _set_env("MONGODB_STRING")
 
 llm = ChatOpenAI(model="gpt-4o", temperature=0) 
-# tools = [search_web]
-# llm_with_tools =  llm.bind_tools(tools, parallel_tool_calls=False)
 
-# sys_msg = SystemMessage(content="You are a helpful assistant tasked with online search ")
 
 class AgentState(BaseModel):
-    raw_user_input: str = Field(
-        description="The raw user input"
+    raw_user_inputs: Annotated[list[AnyMessage], operator.add] = Field(
+        description="The raw user inputs"
     )
     company: str = Field(default=None,
         description="The name of the company"
@@ -55,13 +52,16 @@ class AgentState(BaseModel):
     search_queries: list[str] = Field(default=None,
         description="List of search queries.",
     )
-    search_results:  list[dict] = Field(default=None,
+    enrichment_queries: list[str] = Field(default=None,
+        description="List of enrichment search queries.",
+    )
+    search_results:  Annotated[list[dict], operator.add] = Field(default=None,
         description="Results of the online search"
     ) #Annotated[list, operator.add] # Source docs
     final_report: Annotated[list, operator.add] = Field(default=None,
         description="The final report"
     )
-    is_satisfied : bool = Field(default=None,
+    is_satisfied : bool = Field(default=False,
         description="true if the report is satisfactory"
     )
     enrichment_steps_taken : int = Field(default=0,
@@ -70,10 +70,10 @@ class AgentState(BaseModel):
     
 class UserInput(BaseModel):
     company: str = Field(
-        description="The name of the company"
+        description="The name of the company we are conducting the research on"
     )
-    user_focus_topics : list[str] = Field(
-        description="The focus topics for research on the company from the user's input"
+    user_focus_topics : list[str] = Field(default=None,
+        description="The focus topics for research on the company based only on the user's input"
     )
 
 class Queries(BaseModel):
@@ -85,17 +85,23 @@ class EnrichmentReport(BaseModel):
     is_satisfied : bool = Field(
         description="true if the report is satisfactory"
     )
-    search_queries : list[str] = Field(
+    enrichment_queries : list[str] = Field(
         description="If is_satisfied is False, provide 1-3 targeted search queries to find the missing information and to enreach the data"
+    )
+    reasoning: str = Field(description="Brief explanation of the assessment")
+
+class WebSearchRouter(BaseModel):
+    is_search_results_answers_queries: bool = Field(
+        description="If the model have enough data based on the search results to answer the queries return True, else return False "
     )
     reasoning: str = Field(description="Brief explanation of the assessment")
 
 def get_user_input(state: AgentState):
     # user_text = input("Enter company name and focus topics: ")
     # user_input = "hello, i want to get e report about Tesla. i want to focus about the companys stock whether i should invest in it"
-    user_input = state.raw_user_input
+    raw_user_inputs = state.raw_user_inputs
     structured_llm = llm.with_structured_output(UserInput)
-    result = structured_llm.invoke([HumanMessage(content=user_input)])
+    result = structured_llm.invoke([SystemMessage(content=GET_USER_INPUT)] + raw_user_inputs)
     return {"company" : result.company,
             "user_focus_topics" : result.user_focus_topics}
 
@@ -103,7 +109,7 @@ def generate_queries(state: AgentState):
     """Generate search queries based on the user input and extraction schema."""
     # Get configuration
     # configurable = Configuration.from_runnable_config(config)
-    max_search_queries = 4
+    max_search_queries = 3
 
     # Generate search queries
     structured_llm = llm.with_structured_output(Queries)
@@ -111,7 +117,7 @@ def generate_queries(state: AgentState):
     # Format system instructions
     query_instructions = QUERY_WRITER_PROMPT.format(
         company=state.company,
-        user_notes=state.user_focus_topics,
+        user_focus_topics=state.user_focus_topics,
         max_search_queries=max_search_queries,
     )
     # Generate queries
@@ -124,8 +130,12 @@ def generate_queries(state: AgentState):
 async def search_web(state: AgentState):
         tavily_search = AsyncTavilyClient()
         search_tasks = []
-        for query in state.search_queries:
-             search_tasks.append(tavily_search.search(query,max_results=3))
+        if(not state.enrichment_queries):
+            online_search_queries = state.search_queries
+        else:
+            online_search_queries = state.enrichment_queries
+        for query in online_search_queries:
+             search_tasks.append(tavily_search.search(query,max_results=2))
         search_results = await asyncio.gather(*search_tasks) #list[dict]
         return{"search_results" : search_results}
 
@@ -150,7 +160,8 @@ def write_report(state: AgentState):
     answer_prompt = INFO_PROMPT.format(
         company=state.company,
         queries=state.search_queries,
-        user_notes=state.user_focus_topics,
+        enrichment_queries=state.enrichment_queries,
+        user_focus_topics=state.user_focus_topics,
         content=search_results_str
     )
     report = llm.invoke([SystemMessage(content=answer_prompt)]) 
@@ -160,27 +171,41 @@ def Enrichment(state: AgentState):
     structured_llm = llm.with_structured_output(EnrichmentReport)
     enrichment_prompt = ENRICHMENT_PROMPT.format(
         queries=state.search_queries,
-        report=state.final_report
+        enrichment_queries=state.enrichment_queries,
+        report=state.final_report[-1]
     )
     result = structured_llm.invoke([SystemMessage(content=enrichment_prompt)] + [HumanMessage(content="Produce a structured Enrichment report.")])
     if result.is_satisfied:
         return {"is_satisfied" : result.is_satisfied}
     else:
         print(f"reasoning for enrichment step : {result.reasoning} /n/n")
-        print(f"new queries {result.search_queries} /n/n")
+        print(f"new queries {result.enrichment_queries} /n/n")
         return {"is_satisfied" : result.is_satisfied,
                 "enrichment_steps_taken" : state.enrichment_steps_taken + 1 ,
-                "search_queries": result.search_queries}
+                "enrichment_queries": result.enrichment_queries}
 
 def router(state: AgentState):
     max_enrichment_steps = 3
     enrichment_steps_taken = state.enrichment_steps_taken
-    if state.is_satisfied:
+    if state.is_satisfied or enrichment_steps_taken >= max_enrichment_steps:
+        state.is_satisfied = False
+        state.enrichment_steps_taken = 0
+        state.enrichment_queries = []
         return END
-    if enrichment_steps_taken >= max_enrichment_steps:
-        return END
+    # state.enrichment_steps_taken += 1
     return "search_web"
 
+def web_search_router(state: AgentState):
+    structured_llm = llm.with_structured_output(WebSearchRouter) 
+    
+    web_search_router_prompt = WEB_SEARCH_ROUTER_PROMPT.format(
+        queries=state.search_queries,
+        results=state.search_results
+    )
+    result = structured_llm.invoke([SystemMessage(content=web_search_router_prompt)])
+    if(result.is_search_results_answers_queries):
+        return "write_report"
+    return "search_web"
 
 def build_agent():
     builder = StateGraph(AgentState)
@@ -193,7 +218,8 @@ def build_agent():
 
     builder.add_edge(START, "get_user_input")
     builder.add_edge("get_user_input","generate_queries")
-    builder.add_edge("generate_queries", "search_web")
+    builder.add_conditional_edges("generate_queries",web_search_router)
+    # builder.add_edge("generate_queries", "search_web")
     builder.add_edge("search_web", "write_report")
     builder.add_edge("write_report" , "Enrichment")
     builder.add_conditional_edges("Enrichment",router)

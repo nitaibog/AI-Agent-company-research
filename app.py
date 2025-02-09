@@ -2,14 +2,16 @@ import uuid
 import streamlit as st
 from langgraph.checkpoint.mongodb.aio import AsyncMongoDBSaver
 import os
+from langchain_core.messages import AIMessage, HumanMessage
 import asyncio
 from agent.main import build_agent
 
 
+if "thread_id" not in st.session_state:
+    st.session_state.thread_id = str(uuid.uuid4())
+
 async def initialize_agent():
-    thread_id = str(uuid.uuid4())
-    st.session_state.thread_id = thread_id
-    if 'agent' not in st.session_state:
+    if 'graph' not in st.session_state:
         st.session_state.graph = build_agent()
     
 
@@ -44,19 +46,23 @@ async def render_ui():
             st.markdown(user_input)
 
         config = {"configurable": {"thread_id": thread_id}}
-        # Add AI response to chat history
-        result = await st.session_state.graph.ainvoke({"raw_user_input" : user_input},config=config,stream_mode='values')
-        type(result)
-        st.session_state.messages.append({"role": "assistant", "content": result})
 
-        # Display AI response
+        # Add AI response to chat history
+        result = await st.session_state.graph.ainvoke({"raw_user_inputs" : [HumanMessage(content=user_input)]},config=config,stream_mode='values')
+        type(result)
+        st.session_state.messages.append({"role": "assistant", "content": result["final_report"][-1]})
+        # Display AI response 
+        output_str = result["final_report"][-1].replace("$", "\\$")
+        print(result["final_report"][-1])
         with st.chat_message("assistant"):
-            st.markdown(result["final_report"][-1])
+            st.markdown(output_str)
 
 
 async def main():
     await initialize_agent()
+    print("******")
     await render_ui()
+    print("!!!")
 
 
 
