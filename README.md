@@ -37,7 +37,7 @@ export MONGODB_STRING="your-mongodb-connection-string"
 
 To launch the Agent, run:
 ```bash
-streamlit run streamlitapp.py
+streamlit run app.py
 ```
 
 ## 📌 Usage
