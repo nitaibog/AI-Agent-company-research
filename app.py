@@ -47,10 +47,10 @@ async def render_ui():
 
         # Add AI response to chat history
         result = await st.session_state.graph.ainvoke({"raw_user_inputs" : [HumanMessage(content=user_input)]},config=config,stream_mode='values')
-
-        st.session_state.messages.append({"role": "assistant", "content": result["final_report"][-1]})
-        # Display AI response 
         output_str = result["final_report"][-1].replace("$", "\\$")
+        st.session_state.messages.append({"role": "assistant", "content": output_str})
+        
+        # Display AI response 
         with st.chat_message("assistant"):
             st.markdown(output_str)
 

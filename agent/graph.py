@@ -7,7 +7,7 @@ from langchain_openai import ChatOpenAI
 from .prompts import QUERY_WRITER_PROMPT, INFO_PROMPT, ENRICHMENT_PROMPT ,WEB_SEARCH_ROUTER_PROMPT, GET_USER_INPUT
 from tavily import AsyncTavilyClient
 from langgraph.checkpoint.mongodb.aio import AsyncMongoDBSaver
-from pymongo import MongoClient,AsyncMongoClient
+from pymongo import AsyncMongoClient
 from .state import AgentState,UserInput,Queries,EnrichmentReport,WebSearchRouter
 from .utils import format_search_results
 import os, getpass
