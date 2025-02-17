@@ -9,3 +9,4 @@ langgraph-checkpoint-mongodb
 pymongo
 streamlit
 tavily-python
+python-dotenv
